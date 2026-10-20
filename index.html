@@ -41,11 +41,24 @@ turns:global.relay.metered.ca:443?transport=tcp</textarea>
 <button id="playAudio" disabled>Воспроизвести принятый звук (iPhone)</button>
 <audio id="remoteAudio" controls playsinline style="display:block;width:100%;margin:10px 0"></audio>
 <pre id="audioStatus">Сначала установите соединение: OFFER с Mac, ANSWER с iPhone.</pre>
+<p><b>5. Проверка настоящего MP3 (не более 10 секунд)</b></p>
+<p>На Mac выбери локальный MP3-файл и нажми передачу. Сам файл не загружается на сайт и не отправляется как файл: в WebRTC передаётся только воспроизводимый звук. Передача автоматически остановится через 10 секунд. Для экономии лимита TURN не запускай тест многократно.</p>
+<label for="mp3File">MP3-файл на Mac</label>
+<input id="mp3File" type="file" accept=".mp3,audio/mpeg">
+<button id="playMp3" disabled>Передать MP3 10 секунд (Mac)</button>
+<button id="stopMp3" disabled>Остановить MP3</button>
+<audio id="sourceAudio" controls playsinline style="display:block;width:100%;margin:10px 0"></audio>
+<pre id="mp3Status">Создай OFFER на Mac и установи соединение. Затем выбери MP3-файл.</pre>
 <script>
-const $=id=>document.getElementById(id);let pc=null,dc=null,audioContext=null,audioDestination=null,toneOscillator=null,toneTimer=null;
+const $=id=>document.getElementById(id);let pc=null,dc=null,audioContext=null,audioDestination=null,toneOscillator=null,toneTimer=null,mp3SourceNode=null,mp3ObjectUrl=null,mp3Timer=null,mp3Playing=false;
 function log(s){$('log').textContent+=s+'\n';}
+function refreshMp3Controls(){
+ $('playMp3').disabled=!(pc&&pc.connectionState==='connected'&&audioDestination&&$('mp3File').files.length>0&&!mp3Playing);
+ $('stopMp3').disabled=!mp3Playing;
+}
 function update(s){
  $('status').textContent=s;
+ refreshMp3Controls();
  if(!pc){$('diag').textContent='Соединение ещё не создано';return;}
  $('diag').textContent='ICE: '+pc.iceConnectionState+'\nConnection: '+pc.connectionState+'\nGathering: '+pc.iceGatheringState+'\nSignaling: '+pc.signalingState+'\n\nЛокальные кандидаты:\n'+(pc.localDescription?.sdp?.split('\n').filter(x=>x.includes('a=candidate:')).join('\n')||'нет')+'\n\nУдалённые кандидаты:\n'+(pc.remoteDescription?.sdp?.split('\n').filter(x=>x.includes('a=candidate:')).join('\n')||'нет');
  $('tone').disabled=!(pc.connectionState==='connected'&&audioDestination&&!toneOscillator);
@@ -74,6 +87,45 @@ function stopTone(){if(toneTimer){clearTimeout(toneTimer);toneTimer=null;}if(ton
 $('tone').onclick=async()=>{try{if(!pc||pc.connectionState!=='connected'||!audioDestination)throw Error('Сначала установите соединение с Mac в роли отправителя OFFER.');await audioContext.resume();toneOscillator=audioContext.createOscillator();toneOscillator.type='sine';toneOscillator.frequency.value=440;toneOscillator.connect(audioDestination);toneOscillator.onended=()=>{toneOscillator=null;$('tone').disabled=!(pc&&pc.connectionState==='connected'&&audioDestination);$('stopTone').disabled=true;};toneOscillator.start();$('tone').disabled=true;$('stopTone').disabled=false;$('audioStatus').textContent='Передаётся тестовый тон 440 Гц. Автоостановка через 5 секунд.';toneTimer=setTimeout(()=>{toneTimer=null;if(toneOscillator){try{toneOscillator.stop();}catch(e){}toneOscillator=null;}$('tone').disabled=!(pc&&pc.connectionState==='connected'&&audioDestination);$('stopTone').disabled=true;$('audioStatus').textContent='Тестовый тон завершён (5 секунд).';},5000);}catch(e){$('audioStatus').textContent='Ошибка аудиотеста: '+e;}};
 $('stopTone').onclick=stopTone;
 $('playAudio').onclick=async()=>{try{await $('remoteAudio').play();$('audioStatus').textContent='Воспроизведение принятого аудио запущено.';}catch(e){$('audioStatus').textContent='Не удалось запустить воспроизведение: '+e+'. Попробуй нажать Play в аудиоплеере выше.';}};
+
+$('mp3File').onchange=()=>{
+ const file=$('mp3File').files[0];
+ if(mp3ObjectUrl)URL.revokeObjectURL(mp3ObjectUrl);
+ mp3ObjectUrl=null;
+ $('sourceAudio').removeAttribute('src');
+ $('sourceAudio').load();
+ if(!file){$('mp3Status').textContent='Файл не выбран.';refreshMp3Controls();return;}
+ if(!file.name.toLowerCase().endsWith('.mp3')&&!file.type.includes('mpeg')){$('mp3Status').textContent='Выбери файл MP3.';refreshMp3Controls();return;}
+ mp3ObjectUrl=URL.createObjectURL(file);
+ $('sourceAudio').src=mp3ObjectUrl;
+ $('sourceAudio').load();
+ $('mp3Status').textContent='Выбран файл: '+file.name+' ('+(file.size/1024/1024).toFixed(2)+' МБ). Файл остаётся локально на Mac.';
+ refreshMp3Controls();
+};
+$('playMp3').onclick=async()=>{
+ try{
+  if(!pc||pc.connectionState!=='connected'||!audioDestination)throw Error('Сначала установи соединение, создав OFFER на Mac и ANSWER на iPhone.');
+  if(!$('mp3File').files.length||!mp3ObjectUrl)throw Error('Сначала выбери MP3-файл.');
+  if(mp3Timer){clearTimeout(mp3Timer);mp3Timer=null;}
+  await audioContext.resume();
+  if(!mp3SourceNode){mp3SourceNode=audioContext.createMediaElementSource($('sourceAudio'));mp3SourceNode.connect(audioDestination);}
+  $('sourceAudio').pause();
+  $('sourceAudio').currentTime=0;
+  await $('sourceAudio').play();
+  mp3Playing=true;
+  refreshMp3Controls();
+  $('mp3Status').textContent='Передаётся звук из MP3. Автоостановка через 10 секунд.';
+  mp3Timer=setTimeout(stopMp3,10000);
+ }catch(e){$('mp3Status').textContent='Ошибка MP3-теста: '+e;mp3Playing=false;refreshMp3Controls();}
+};
+function stopMp3(){
+ if(mp3Timer){clearTimeout(mp3Timer);mp3Timer=null;}
+ $('sourceAudio').pause();
+ mp3Playing=false;
+ refreshMp3Controls();
+ $('mp3Status').textContent='Передача MP3 остановлена.';
+}
+$('stopMp3').onclick=stopMp3;
 if(!window.RTCPeerConnection)update('Ошибка: WebRTC не поддерживается');
 </script>
 </body></html>
