@@ -34,13 +34,21 @@ turns:global.relay.metered.ca:443?transport=tcp</textarea>
 <p><b>2. Состояние соединения</b></p><pre id="diag">Соединение ещё не создано</pre>
 <p><b>3. Проверка передачи</b></p>
 <button id="send">Отправить TEST</button><pre id="log"></pre>
+<p><b>4. Короткий аудиотест</b></p>
+<p>Mac отправит синусоидальный тон 440 Гц длительностью не более 5 секунд. Это проверяет аудиоканал, не передавая музыкальные файлы.</p>
+<button id="tone" disabled>Передать тон 5 секунд (Mac)</button>
+<button id="stopTone" disabled>Остановить тон</button>
+<button id="playAudio" disabled>Воспроизвести принятый звук (iPhone)</button>
+<audio id="remoteAudio" controls playsinline style="display:block;width:100%;margin:10px 0"></audio>
+<pre id="audioStatus">Сначала установите соединение: OFFER с Mac, ANSWER с iPhone.</pre>
 <script>
-const $=id=>document.getElementById(id);let pc=null,dc=null;
+const $=id=>document.getElementById(id);let pc=null,dc=null,audioContext=null,audioDestination=null,toneOscillator=null,toneTimer=null;
 function log(s){$('log').textContent+=s+'\n';}
 function update(s){
  $('status').textContent=s;
  if(!pc){$('diag').textContent='Соединение ещё не создано';return;}
  $('diag').textContent='ICE: '+pc.iceConnectionState+'\nConnection: '+pc.connectionState+'\nGathering: '+pc.iceGatheringState+'\nSignaling: '+pc.signalingState+'\n\nЛокальные кандидаты:\n'+(pc.localDescription?.sdp?.split('\n').filter(x=>x.includes('a=candidate:')).join('\n')||'нет')+'\n\nУдалённые кандидаты:\n'+(pc.remoteDescription?.sdp?.split('\n').filter(x=>x.includes('a=candidate:')).join('\n')||'нет');
+ $('tone').disabled=!(pc.connectionState==='connected'&&audioDestination&&!toneOscillator);
 }
 function newPC(){
  const urls=$('turnurls').value.split(/\n/).map(x=>x.trim()).filter(Boolean);
@@ -54,14 +62,18 @@ function newPC(){
  pc.oniceconnectionstatechange=()=>update('ICE: '+pc.iceConnectionState);
  pc.onconnectionstatechange=()=>update('Соединение: '+pc.connectionState);
  pc.onicecandidate=()=>update('Обновлены сетевые кандидаты');
- pc.ondatachannel=e=>{dc=e.channel;wire();};return pc;
+ pc.ondatachannel=e=>{dc=e.channel;wire();};pc.ontrack=e=>{const audio=$('remoteAudio');audio.srcObject=e.streams[0]||new MediaStream([e.track]);$('playAudio').disabled=false;$('audioStatus').textContent='Аудиодорожка получена. На iPhone нажми «Воспроизвести принятый звук» после запуска тона на Mac.';log('Получена аудиодорожка: '+e.track.kind);};return pc;
 }
 function wire(){dc.onopen=()=>{update('КАНАЛ ОТКРЫТ');log('Канал открыт');};dc.onmessage=e=>log('ПОЛУЧЕНО: '+e.data);dc.onclose=()=>log('Канал закрыт');}
 function waitGathering(){if(pc.iceGatheringState==='complete')return Promise.resolve();return new Promise(resolve=>{const done=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',done);resolve();}};pc.addEventListener('icegatheringstatechange',done);setTimeout(resolve,25000);});}
-$('offer').onclick=async()=>{try{newPC();dc=pc.createDataChannel('direct-test');wire();await pc.setLocalDescription(await pc.createOffer());update('Собираем кандидаты OFFER…');await waitGathering();$('out').value=JSON.stringify(pc.localDescription);update('OFFER готов. Перенесите его на iPhone.');}catch(e){update('Ошибка: '+e);}};
+$('offer').onclick=async()=>{try{newPC();audioContext=new (window.AudioContext||window.webkitAudioContext)();audioDestination=audioContext.createMediaStreamDestination();pc.addTrack(audioDestination.stream.getAudioTracks()[0],audioDestination.stream);$('audioStatus').textContent='Аудиодорожка добавлена в OFFER. После соединения можно отправить короткий тестовый тон.';dc=pc.createDataChannel('direct-test');wire();await pc.setLocalDescription(await pc.createOffer());update('Собираем кандидаты OFFER…');await waitGathering();$('out').value=JSON.stringify(pc.localDescription);update('OFFER готов. Перенесите его на iPhone.');}catch(e){update('Ошибка: '+e);}};
 $('answer').onclick=async()=>{try{newPC();await pc.setRemoteDescription(JSON.parse($('in').value));await pc.setLocalDescription(await pc.createAnswer());update('Собираем кандидаты ANSWER…');await waitGathering();$('out').value=JSON.stringify(pc.localDescription);update('ANSWER готов. Перенесите его на Mac.');}catch(e){update('Ошибка: '+e);}};
 $('apply').onclick=async()=>{try{if(!pc)throw Error('Сначала создайте OFFER на Mac');await pc.setRemoteDescription(JSON.parse($('in').value));update('ANSWER применён; ожидаем соединение…');}catch(e){update('Ошибка: '+e);}};
 $('send').onclick=()=>{if(dc&&dc.readyState==='open')dc.send('TEST FROM '+(/iPhone|iPad/.test(navigator.userAgent)?'IPHONE':'MAC'));else log('Канал не открыт');};
+function stopTone(){if(toneTimer){clearTimeout(toneTimer);toneTimer=null;}if(toneOscillator){try{toneOscillator.stop();}catch(e){}toneOscillator=null;}$('tone').disabled=!(pc&&pc.connectionState==='connected'&&audioDestination);$('stopTone').disabled=true;$('audioStatus').textContent='Передача тона остановлена.';}
+$('tone').onclick=async()=>{try{if(!pc||pc.connectionState!=='connected'||!audioDestination)throw Error('Сначала установите соединение с Mac в роли отправителя OFFER.');await audioContext.resume();toneOscillator=audioContext.createOscillator();toneOscillator.type='sine';toneOscillator.frequency.value=440;toneOscillator.connect(audioDestination);toneOscillator.onended=()=>{toneOscillator=null;$('tone').disabled=!(pc&&pc.connectionState==='connected'&&audioDestination);$('stopTone').disabled=true;};toneOscillator.start();$('tone').disabled=true;$('stopTone').disabled=false;$('audioStatus').textContent='Передаётся тестовый тон 440 Гц. Автоостановка через 5 секунд.';toneTimer=setTimeout(()=>{toneTimer=null;if(toneOscillator){try{toneOscillator.stop();}catch(e){}toneOscillator=null;}$('tone').disabled=!(pc&&pc.connectionState==='connected'&&audioDestination);$('stopTone').disabled=true;$('audioStatus').textContent='Тестовый тон завершён (5 секунд).';},5000);}catch(e){$('audioStatus').textContent='Ошибка аудиотеста: '+e;}};
+$('stopTone').onclick=stopTone;
+$('playAudio').onclick=async()=>{try{await $('remoteAudio').play();$('audioStatus').textContent='Воспроизведение принятого аудио запущено.';}catch(e){$('audioStatus').textContent='Не удалось запустить воспроизведение: '+e+'. Попробуй нажать Play в аудиоплеере выше.';}};
 if(!window.RTCPeerConnection)update('Ошибка: WebRTC не поддерживается');
 </script>
 </body></html>
