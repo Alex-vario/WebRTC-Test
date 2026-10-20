@@ -3,15 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WebRTC Direct Test</title>
+<title>WebRTC Direct / TURN Test</title>
 <style>
 body{font:16px -apple-system,BlinkMacSystemFont,sans-serif;max-width:850px;margin:20px auto;padding:0 14px;background:#15171b;color:#eee}
-button{padding:12px;margin:4px 2px;font-size:15px}textarea{box-sizing:border-box;width:100%;min-height:130px;margin:8px 0;background:#22262c;color:#eee;border:1px solid #555;padding:8px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#22262c;padding:10px}#status{padding:12px;background:#242a31;overflow-wrap:anywhere}
+button{padding:12px;margin:4px 2px;font-size:15px}textarea,input{box-sizing:border-box;width:100%;margin:6px 0 10px;background:#22262c;color:#eee;border:1px solid #555;padding:9px}textarea{min-height:130px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#22262c;padding:10px}#status{padding:12px;background:#242a31;overflow-wrap:anywhere}label{display:block;margin-top:10px}small{color:#c3c8d0}fieldset{border:1px solid #555;margin:12px 0;padding:12px}
 </style>
 </head>
 <body>
 <h2>WebRTC — проверка прямого соединения</h2>
-<p>Страница размещена на GitHub Pages. Музыка или другие файлы через GitHub не передаются: тестируем только прямой WebRTC DataChannel с STUN.</p>
+<p>GitHub Pages размещает только тестовую страницу. Сам DataChannel работает между браузерами. Режим TURN проверяет передачу через ретранслятор, если прямой маршрут не проходит.</p>
+<fieldset>
+<legend>Настройки TURN — одинаковые на Mac и iPhone</legend>
+<p><small>Нужны TURN-учётные данные от провайдера, например Metered. Не вставляйте сюда API secret от аккаунта — только TURN username и credential/password, выданные для ICE.</small></p>
+<label for="turnurls">TURN URLs (по одному на строку)</label>
+<textarea id="turnurls" style="min-height:90px">turn:global.relay.metered.ca:80
+turn:global.relay.metered.ca:80?transport=tcp
+turn:global.relay.metered.ca:443
+turns:global.relay.metered.ca:443?transport=tcp</textarea>
+<label for="turnuser">TURN username</label><input id="turnuser" autocomplete="off" placeholder="Вставьте username из ICE Servers Array">
+<label for="turnpass">TURN credential / password</label><input id="turnpass" autocomplete="off" type="password" placeholder="Вставьте credential из ICE Servers Array">
+<label><input id="relayonly" type="checkbox" checked style="width:auto"> Использовать только TURN (проверка через ретранслятор)</label>
+</fieldset>
 <div id="status">Страница загружена</div>
 <p><b>1. Обмен данными</b></p>
 <textarea id="out" placeholder="Исходящие данные появятся здесь"></textarea>
@@ -31,14 +43,21 @@ function update(s){
  $('diag').textContent='ICE: '+pc.iceConnectionState+'\nConnection: '+pc.connectionState+'\nGathering: '+pc.iceGatheringState+'\nSignaling: '+pc.signalingState+'\n\nЛокальные кандидаты:\n'+(pc.localDescription?.sdp?.split('\n').filter(x=>x.includes('a=candidate:')).join('\n')||'нет')+'\n\nУдалённые кандидаты:\n'+(pc.remoteDescription?.sdp?.split('\n').filter(x=>x.includes('a=candidate:')).join('\n')||'нет');
 }
 function newPC(){
- pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+ const urls=$('turnurls').value.split(/\n/).map(x=>x.trim()).filter(Boolean);
+ const iceServers=[{urls:'stun:stun.l.google.com:19302'}];
+ const username=$('turnuser').value.trim(),credential=$('turnpass').value;
+ if(username&&credential&&urls.length)iceServers.push({urls,username,credential});
+ else if($('relayonly').checked)throw Error('Для режима TURN-only сначала введите TURN username и credential.');
+ const config={iceServers};
+ if($('relayonly').checked)config.iceTransportPolicy='relay';
+ pc=new RTCPeerConnection(config);
  pc.oniceconnectionstatechange=()=>update('ICE: '+pc.iceConnectionState);
  pc.onconnectionstatechange=()=>update('Соединение: '+pc.connectionState);
  pc.onicecandidate=()=>update('Обновлены сетевые кандидаты');
  pc.ondatachannel=e=>{dc=e.channel;wire();};return pc;
 }
 function wire(){dc.onopen=()=>{update('КАНАЛ ОТКРЫТ');log('Канал открыт');};dc.onmessage=e=>log('ПОЛУЧЕНО: '+e.data);dc.onclose=()=>log('Канал закрыт');}
-function waitGathering(){if(pc.iceGatheringState==='complete')return Promise.resolve();return new Promise(resolve=>{const done=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',done);resolve();}};pc.addEventListener('icegatheringstatechange',done);setTimeout(resolve,20000);});}
+function waitGathering(){if(pc.iceGatheringState==='complete')return Promise.resolve();return new Promise(resolve=>{const done=()=>{if(pc.iceGatheringState==='complete'){pc.removeEventListener('icegatheringstatechange',done);resolve();}};pc.addEventListener('icegatheringstatechange',done);setTimeout(resolve,25000);});}
 $('offer').onclick=async()=>{try{newPC();dc=pc.createDataChannel('direct-test');wire();await pc.setLocalDescription(await pc.createOffer());update('Собираем кандидаты OFFER…');await waitGathering();$('out').value=JSON.stringify(pc.localDescription);update('OFFER готов. Перенесите его на iPhone.');}catch(e){update('Ошибка: '+e);}};
 $('answer').onclick=async()=>{try{newPC();await pc.setRemoteDescription(JSON.parse($('in').value));await pc.setLocalDescription(await pc.createAnswer());update('Собираем кандидаты ANSWER…');await waitGathering();$('out').value=JSON.stringify(pc.localDescription);update('ANSWER готов. Перенесите его на Mac.');}catch(e){update('Ошибка: '+e);}};
 $('apply').onclick=async()=>{try{if(!pc)throw Error('Сначала создайте OFFER на Mac');await pc.setRemoteDescription(JSON.parse($('in').value));update('ANSWER применён; ожидаем соединение…');}catch(e){update('Ошибка: '+e);}};
